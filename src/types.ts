@@ -32,6 +32,10 @@ export interface GameState {
   floor: number;
   staircasePos: Point | null;
   mansionEscaped: boolean;
+  dummyPos: Point;
+  hasDummy: boolean;
+  isRunGame: boolean;
+  endingPhase: boolean;
 }
 
 export const WORLD_SIZE = 3000;

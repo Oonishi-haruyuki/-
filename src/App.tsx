@@ -8,6 +8,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Chrome, Ghost, Skull, Volume2, VolumeX, RefreshCcw, Play, FlaskConical, Zap, BookOpen, X } from 'lucide-react';
 import { GameState, Point, WORLD_SIZE, PLAYER_SPEED, MONSTER_BASE_SPEED, VISION_RADIUS, ITEM_COUNT, Item, ItemType, Difficulty } from './types.ts';
 import { Mansion3D } from './components/Mansion3D.tsx';
+import { RunGame } from './components/RunGame.tsx';
 
 // Helper to generate random points
 const getRandomPoint = (margin = 100): Point => ({
@@ -37,7 +38,83 @@ export default function App() {
     floor: 0,
     staircasePos: null,
     mansionEscaped: false,
+    dummyPos: { x: 100, y: 100 },
+    hasDummy: false,
+    isRunGame: false,
+    endingPhase: false,
   });
+
+  const [keyword, setKeyword] = useState('');
+  const [trapVolume, setTrapVolume] = useState(0);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const gainNodeRef = useRef<GainNode | null>(null);
+  const oscRef = useRef<OscillatorNode | null>(null);
+
+  // Trap Audio Logic
+  useEffect(() => {
+    if (gameState.gameStarted) {
+      if (oscRef.current) {
+        oscRef.current.stop();
+        oscRef.current = null;
+      }
+      return;
+    }
+
+    const initAudio = () => {
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+        gainNodeRef.current = audioCtxRef.current.createGain();
+        gainNodeRef.current.gain.value = 0;
+        gainNodeRef.current.connect(audioCtxRef.current.destination);
+        
+        const osc = audioCtxRef.current.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(40, audioCtxRef.current.currentTime); // Low hum
+        const lfo = audioCtxRef.current.createOscillator();
+        lfo.frequency.setValueAtTime(2, audioCtxRef.current.currentTime); // Heartbeat feel
+        const lfoGain = audioCtxRef.current.createGain();
+        lfoGain.gain.setValueAtTime(10, audioCtxRef.current.currentTime);
+        lfo.connect(lfoGain);
+        lfoGain.connect(osc.frequency);
+        
+        osc.connect(gainNodeRef.current);
+        osc.start();
+        lfo.start();
+        oscRef.current = osc;
+      }
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (gameState.gameStarted) return;
+      initAudio();
+      
+      // Approximate center of the hidden trap
+      // Since it's -left-16 top-0 relative to the nav, we estimate its screen position
+      // For simplicity, we target the left center of the screen area
+      const trapX = window.innerWidth / 3; 
+      const trapY = window.innerHeight / 2;
+      
+      const dx = e.clientX - trapX;
+      const dy = e.clientY - trapY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      
+      const vol = Math.max(0, 1 - dist / 300);
+      setTrapVolume(vol);
+      
+      if (gainNodeRef.current && audioCtxRef.current) {
+        gainNodeRef.current.gain.setTargetAtTime(vol * 0.3, audioCtxRef.current.currentTime, 0.1);
+      }
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      if (oscRef.current) {
+        oscRef.current.stop();
+        oscRef.current = null;
+      }
+    };
+  }, [gameState.gameStarted]);
 
   const isMobile = typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
@@ -76,7 +153,15 @@ export default function App() {
       floor: 0,
       staircasePos: null,
       mansionEscaped: false,
+      dummyPos: { x: 100, y: 100 },
+      hasDummy: Math.random() < 0.3,
+      isRunGame: false,
+      endingPhase: false,
     });
+  };
+
+  const startRunGame = () => {
+    setGameState(prev => ({ ...prev, gameStarted: true, isRunGame: true, isCaught: false }));
   };
 
   const startFromFloor2 = (difficulty: Difficulty = 'NORMAL') => {
@@ -95,6 +180,10 @@ export default function App() {
       floor: 1,
       staircasePos: null,
       mansionEscaped: false,
+      dummyPos: { x: 100, y: 100 },
+      hasDummy: false,
+      isRunGame: false,
+      endingPhase: false,
     });
   };
 
@@ -145,7 +234,7 @@ export default function App() {
   const update = useCallback(() => {
     if (!gameStateRef.current.gameStarted || gameStateRef.current.isCaught) return;
 
-    const { playerPos, monsterPos, items, score, monsterStunnedUntil, inventory, difficulty, floor, staircasePos } = gameStateRef.current;
+    const { playerPos, monsterPos, dummyPos, hasDummy, items, score, monsterStunnedUntil, inventory, difficulty, floor, staircasePos } = gameStateRef.current;
 
     if (floor !== 0) return; // Handled by 3D component or simply paused 2D state
 
@@ -194,11 +283,32 @@ export default function App() {
       y: monsterPos.y + (mDy / mDist) * monsterSpeed,
     };
 
+    // Dummy logic
+    let nextDummyPos = dummyPos;
+    if (hasDummy && !stunned) {
+      // Dummy follows monster with a lag
+      const dDx = nextMonsterPos.x - dummyPos.x;
+      const dDy = nextMonsterPos.y - dummyPos.y;
+      const dDist = Math.sqrt(dDx * dDx + dDy * dDy);
+      
+      if (dDist > 100) { // Keep some distance
+        nextDummyPos = {
+          x: dummyPos.x + (dDx / dDist) * (monsterSpeed * 0.9),
+          y: dummyPos.y + (dDy / dDist) * (monsterSpeed * 0.9),
+        };
+      }
+    }
+
     // Collision Check
     const distToMonster = Math.sqrt(
       Math.pow(nextPlayerPos.x - nextMonsterPos.x, 2) + 
       Math.pow(nextPlayerPos.y - nextMonsterPos.y, 2)
     );
+
+    const distToDummy = hasDummy ? Math.sqrt(
+      Math.pow(nextPlayerPos.x - nextDummyPos.x, 2) + 
+      Math.pow(nextPlayerPos.y - nextDummyPos.y, 2)
+    ) : Infinity;
 
     // Scare level based on distance
     const scareLevel = Math.max(0, 1 - distToMonster / 800);
@@ -226,7 +336,7 @@ export default function App() {
 
     const distToStaircase = newStaircasePos ? Math.sqrt(Math.pow(nextPlayerPos.x - newStaircasePos.x, 2) + Math.pow(nextPlayerPos.y - newStaircasePos.y, 2)) : Infinity;
 
-    if (distToMonster < 40) {
+    if (distToMonster < 40 || distToDummy < 35) {
       setGameState(prev => ({ ...prev, isCaught: true, scareLevel: 1 }));
     } else if (distToStaircase < 100) {
       // Transition to floor 1 (3D)
@@ -241,6 +351,7 @@ export default function App() {
         ...prev,
         playerPos: nextPlayerPos,
         monsterPos: nextMonsterPos,
+        dummyPos: nextDummyPos,
         items: remainingItems,
         score: newScore,
         inventory: newInventory,
@@ -282,10 +393,12 @@ export default function App() {
               difficulty={gameState.difficulty}
               monsterStunnedUntil={gameState.monsterStunnedUntil}
               onExit={() => setGameState(prev => ({ ...prev, floor: 0 }))}
-              onWin={() => setGameState(prev => ({ ...prev, mansionEscaped: true, floor: 0 }))} 
+              onWin={() => setGameState(prev => ({ ...prev, mansionEscaped: true, gameStarted: false, floor: 0 }))} 
               onCaught={() => setGameState(prev => ({ ...prev, isCaught: true, floor: 0 }))}
             />
           </motion.div>
+        ) : gameState.isRunGame ? (
+          <RunGame onExit={() => setGameState(prev => ({ ...prev, isRunGame: false, gameStarted: false }))} />
         ) : !gameState.gameStarted ? (
           <motion.div 
             key="start-screen"
@@ -313,7 +426,26 @@ export default function App() {
                 </motion.p>
               </div>
 
-              <nav className="mt-8 md:mt-20 flex flex-col gap-2 md:gap-4">
+              <nav className="mt-8 md:mt-20 flex flex-col gap-2 md:gap-4 relative">
+                {/* Hidden Trap - Styled as a faint ghostly door */}
+                <motion.div 
+                  initial={{ opacity: 0 }}
+                  animate={{ 
+                    opacity: [0.02, 0.1, 0.02],
+                    boxShadow: ["0 0 0px rgba(157,0,0,0)", "0 0 20px rgba(157,0,0,0.2)", "0 0 0px rgba(157,0,0,0)"]
+                  }}
+                  transition={{
+                    duration: 4,
+                    repeat: Infinity,
+                    ease: "easeInOut"
+                  }}
+                  className="absolute -left-16 top-0 w-12 h-32 cursor-pointer z-[100] border-l border-accent/20 bg-gradient-to-r from-accent/5 to-transparent flex items-center justify-end pr-2 overflow-hidden"
+                  onClick={() => setGameState(prev => ({ ...prev, isCaught: true, gameStarted: true }))}
+                >
+                  {/* Subtle Door Knob */}
+                  <div className="w-2 h-2 rounded-full bg-accent/30 shadow-[0_0_5px_#9d0000] border border-accent/10" />
+                </motion.div>
+
                 <button 
                   onClick={() => startGame('NORMAL')}
                   className="flex items-center group text-left py-2"
@@ -328,7 +460,7 @@ export default function App() {
                   className="flex items-center group text-left py-2"
                 >
                   <div className="w-0 group-hover:w-10 h-[1px] bg-accent mr-0 group-hover:mr-5 transition-all duration-300 shadow-[0_0_10px_#9d0000]" />
-                  <span className="font-serif text-sm md:text-xl uppercase tracking-[2px] md:tracking-[4px] text-ink/50 group-hover:text-ink transition-colors">
+                  <span className="font-serif text-sm md:text-xl uppercase tracking-[2px] md:tracking-[4px] text-ink/50 group-hover:text-ink transition-colors text-nowrap">
                     2階から開始する
                   </span>
                 </button>
@@ -350,6 +482,21 @@ export default function App() {
                     記憶の断片
                   </span>
                 </button>
+
+                {/* Keyword Input for RUN game */}
+                <div className="mt-4 flex items-center gap-2 border-b border-ink/10 pb-1">
+                   <input 
+                      type="text" 
+                      placeholder="SECRET KEYWORD..." 
+                      className="bg-transparent border-none outline-none text-[10px] tracking-widest text-ink/40 w-32 focus:text-accent transition-colors"
+                      value={keyword}
+                      onChange={(e) => {
+                        const val = e.target.value.toUpperCase();
+                        setKeyword(val);
+                        if (val === 'RUN') startRunGame();
+                      }}
+                   />
+                </div>
               </nav>
             </header>
 
@@ -532,6 +679,33 @@ export default function App() {
              <div className={`absolute inset-0 ${isStunned ? 'bg-blue-900/20' : 'bg-accent/10'} blur-3xl -z-10 animate-pulse`} />
           </div>
         </motion.div>
+
+        {/* Dummy Monster */}
+        {gameState.hasDummy && (
+          <motion.div
+            animate={{
+              x: gameState.dummyPos.x,
+              y: gameState.dummyPos.y,
+              scale: 0.9 + gameState.scareLevel * 0.2,
+            }}
+            className="absolute z-35 -translate-x-1/2 -translate-y-1/2 opacity-60"
+          >
+            <div className="relative">
+               <div className="w-48 h-48 bg-black rounded-full flex flex-col items-center justify-center border border-accent/10 overflow-hidden">
+                  <div className="flex gap-12 mt-2 opacity-40">
+                    <div className="w-8 h-8 bg-zinc-950 rounded-full flex items-center justify-center">
+                      <div className="w-2 h-2 rounded-full bg-accent/40" />
+                    </div>
+                    <div className="w-8 h-8 bg-zinc-950 rounded-full flex items-center justify-center">
+                      <div className="w-2 h-2 rounded-full bg-accent/40" />
+                    </div>
+                  </div>
+                  <div className="mt-8 w-20 h-8 bg-black rounded-b-full border-t border-accent/20 opacity-30" />
+               </div>
+               <div className="absolute inset-0 bg-accent/5 blur-2xl -z-10" />
+            </div>
+          </motion.div>
+        )}
       </div>
 
       {/* Lighting / Flashlight Layer */}
@@ -685,6 +859,19 @@ export default function App() {
             >
                <div className="absolute inset-0 bg-red-500 blur-sm rounded-full" />
             </motion.div>
+
+            {/* Dummy Marker on Map */}
+            {gameState.hasDummy && (
+              <motion.div 
+                key="map-dummy"
+                className="absolute w-2 h-2 bg-red-900/40 rounded-full z-12"
+                style={{ 
+                  left: `${(gameState.dummyPos.x / WORLD_SIZE) * 100}%`, 
+                  top: `${(gameState.dummyPos.y / WORLD_SIZE) * 100}%`,
+                  transform: 'translate(-50%, -50%)'
+                }}
+              />
+            )}
           </div>
         </div>
       </div>
@@ -767,42 +954,46 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="absolute inset-0 z-[100] bg-bg flex flex-col items-center justify-center p-8 text-center"
+            className="absolute inset-0 z-[100] bg-bg flex flex-col items-center justify-center p-6 md:p-8 text-center overscroll-none"
           >
             <motion.div
                animate={{ 
-                 scale: [1, 1.2, 0.9, 1.1, 1],
-                 filter: ["blur(0px)", "blur(10px)", "blur(0px)"]
+                 scale: [1, 1.1, 0.95, 1.05, 1],
+                 filter: ["blur(0px)", "blur(4px)", "blur(0px)"]
                }}
-               transition={{ duration: 0.1, repeat: 5 }}
-               className="mb-12"
+               transition={{ duration: 0.15, repeat: 3 }}
+               className="mb-8 md:mb-12 scale-75 md:scale-100"
             >
-               <div className="w-96 h-96 bg-zinc-950 rounded-full border-4 border-accent flex flex-col items-center justify-center relative overflow-hidden shadow-[0_0_150px_rgba(157,0,0,0.3)]">
-                  <div className="flex gap-24">
-                     <div className="w-20 h-20 bg-accent rounded-full shadow-[0_0_80px_rgba(157,0,0,0.8)]" />
-                     <div className="w-20 h-20 bg-accent rounded-full shadow-[0_0_80px_rgba(157,0,0,0.8)]" />
+               <div className="w-64 h-64 md:w-96 md:h-96 bg-zinc-950 rounded-full border-4 border-accent flex flex-col items-center justify-center relative overflow-hidden shadow-[0_0_100px_rgba(157,0,0,0.3)]">
+                  <div className="flex gap-16 md:gap-24">
+                     <div className="w-12 h-12 md:w-20 md:h-20 bg-accent rounded-full shadow-[0_0_80px_rgba(157,0,0,0.8)]" />
+                     <div className="w-12 h-12 md:w-20 md:h-20 bg-accent rounded-full shadow-[0_0_80px_rgba(157,0,0,0.8)]" />
                   </div>
-                  <div className="mt-16 w-64 h-16 bg-black rounded-b-full border-t border-accent flex items-end justify-center pb-3">
-                    <div className="flex gap-1">
-                       {Array.from({length: 16}).map((_,i) => (
-                         <div key={i} className="w-2 h-8 bg-ink/80 rounded-sm" />
+                  <div className="mt-10 md:mt-16 w-48 md:w-64 h-12 md:h-16 bg-black rounded-b-full border-t border-accent flex items-end justify-center pb-2 md:pb-3">
+                    <div className="flex gap-0.5 md:gap-1">
+                       {Array.from({length: 12}).map((_,i) => (
+                         <div key={i} className="w-1.5 md:w-2 h-6 md:h-8 bg-ink/80 rounded-sm" />
                        ))}
                     </div>
                   </div>
                </div>
             </motion.div>
 
-            <h2 className="font-serif text-[120px] leading-none font-black text-accent tracking-[-6px] uppercase mb-4 filter drop-shadow-[0_0_30px_rgba(157,0,0,0.3)]">
+            <h2 className="font-serif text-[60px] md:text-[120px] leading-none font-black text-accent tracking-[-2px] md:tracking-[-6px] uppercase mb-2 md:mb-4 filter drop-shadow-[0_0_30px_rgba(157,0,0,0.3)]">
               終焉
             </h2>
-            <p className="font-serif italic text-2xl text-ink/40 mb-16">THE ESCAPE FAILED. THE FOREST BENDS FOR NO ONE.</p>
+            <p className="font-serif italic text-sm md:text-2xl text-ink/40 mb-12 md:mb-16 uppercase tracking-[1px] md:tracking-[2px]">
+              THE ESCAPE FAILED.<br/>THE FOREST BENDS FOR NO ONE.
+            </p>
             
             <button 
-              onClick={() => setGameState(prev => ({ ...prev, gameStarted: false, isCaught: false }))}
-              className="flex items-center gap-4 px-12 py-6 border border-accent hover:bg-accent transition-all group"
+              onClick={() => setGameState(prev => ({ ...prev, gameStarted: false, isCaught: false, mansionEscaped: false, floor: 0 }))}
+              className="flex items-center justify-center gap-4 w-full md:w-auto px-8 py-6 md:px-12 border border-accent hover:bg-accent transition-all group active:scale-95 bg-accent/5 backdrop-blur-sm shadow-[0_0_20px_rgba(157,0,0,0.2)]"
             >
               <RefreshCcw className="group-hover:rotate-180 transition-transform duration-500 text-accent group-hover:text-ink" />
-              <span className="font-serif text-xl uppercase tracking-[4px] text-accent group-hover:text-ink italic">輪廻の始まり</span>
+              <span className="font-serif text-lg md:text-xl uppercase tracking-[2px] md:tracking-[4px] text-accent group-hover:text-ink italic">
+                タイトルに戻る
+              </span>
             </button>
           </motion.div>
         ) : gameState.mansionEscaped ? (
@@ -811,19 +1002,35 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="absolute inset-0 z-[100] bg-ink text-bg flex flex-col items-center justify-center p-8 text-center"
+            className="absolute inset-0 z-[100] bg-ink text-bg flex flex-col items-center justify-center p-6 md:p-8 text-center overscroll-none"
           >
-            <h2 className="font-serif text-[140px] leading-none font-black tracking-[-8px] uppercase mb-4">生存</h2>
-            <p className="font-serif italic text-3xl text-bg/60 mb-20 tracking-wider">THE CURSE IS BROKEN. FOR NOW.</p>
+            <h2 className="font-serif text-[80px] md:text-[140px] leading-none font-black tracking-[-4px] md:tracking-[-8px] uppercase mb-4">生存</h2>
+            <p className="font-serif italic text-xl md:text-3xl text-bg/60 mb-16 md:mb-20 tracking-wider">THE CURSE IS BROKEN. FOR NOW.</p>
             
             <button 
-              onClick={() => setGameState(prev => ({ ...prev, gameStarted: false, isCaught: false }))}
-              className="px-16 py-8 bg-bg text-ink border border-bg hover:bg-zinc-800 transition-colors"
+              onClick={() => setGameState(prev => ({ ...prev, gameStarted: false, isCaught: false, mansionEscaped: false, floor: 0 }))}
+              className="flex items-center justify-center w-full md:w-auto px-8 py-6 md:px-16 bg-bg text-ink border border-bg hover:bg-zinc-800 transition-colors active:scale-95 shadow-[0_0_30px_rgba(255,255,255,0.1)]"
             >
-              <span className="font-serif text-2xl uppercase tracking-[6px] italic">現世へ戻る</span>
+              <span className="font-serif text-lg md:text-2xl uppercase tracking-[2px] md:tracking-[6px] italic">現世へ戻る</span>
             </button>
-            <div className="mt-20 text-[10px] uppercase tracking-[4px] opacity-20 font-bold">
-              CONGRATULATIONS PERFORMER. YOU HAVE BESTED THE FOREST.
+            
+            <div className="mt-12 md:mt-20 flex flex-col items-center gap-4">
+               <div className="text-[8px] md:text-[10px] uppercase tracking-[2px] md:tracking-[4px] opacity-40 font-bold max-w-xs md:max-w-none">
+                 CONGRATULATIONS PERFORMER. YOU HAVE BESTED THE FOREST.
+               </div>
+               
+               {/* Simulated music visualizer for ending */}
+               <div className="flex gap-1 h-8 items-end">
+                  {Array.from({length: 12}).map((_, i) => (
+                    <motion.div 
+                      key={i}
+                      animate={{ height: [4, 20 + Math.random() * 12, 4] }}
+                      transition={{ repeat: Infinity, duration: 0.5 + Math.random() * 0.5 }}
+                      className="w-0.5 bg-accent/40"
+                    />
+                  ))}
+               </div>
+               <div className="text-[8px] uppercase tracking-widest text-accent/80 animate-pulse">Now Playing: Requiem for the Shadows</div>
             </div>
           </motion.div>
         ) : null}

@@ -60,8 +60,11 @@ const MemoryFragment = ({ position, onPick }: { position: [number, number, numbe
 
 const Monster3D = ({ onCaught, collected, stunnedUntil }: { onCaught: () => void, collected: number, stunnedUntil: number }) => {
   const meshRef = useRef<THREE.Group>(null);
+  const dummyRef = useRef<THREE.Group>(null);
   const [active, setActive] = useState(false);
+  const [hasDummy, setHasDummy] = useState(false);
   const [pos, setPos] = useState(new THREE.Vector3(0, 0, -50));
+  const [dummyPos, setDummyPos] = useState(new THREE.Vector3(0, 0, -50));
 
   useFrame((state) => {
     const playerPos = state.camera.position;
@@ -69,6 +72,7 @@ const Monster3D = ({ onCaught, collected, stunnedUntil }: { onCaught: () => void
     
     if (!active && Math.random() < 0.008) {
       setActive(true);
+      setHasDummy(Math.random() < 0.3); // 30% chance for dummy
       const angle = Math.random() * Math.PI * 2;
       const spawnPos = new THREE.Vector3(
         playerPos.x + Math.cos(angle) * 20,
@@ -77,6 +81,7 @@ const Monster3D = ({ onCaught, collected, stunnedUntil }: { onCaught: () => void
       );
       if (meshRef.current) meshRef.current.position.copy(spawnPos);
       else setPos(spawnPos);
+      setDummyPos(spawnPos.clone());
     }
 
     if (active && meshRef.current) {
@@ -87,6 +92,18 @@ const Monster3D = ({ onCaught, collected, stunnedUntil }: { onCaught: () => void
       
       if (!isStunned) {
         meshRef.current.position.addScaledVector(dir, 0.05 * speedScale);
+        
+        // Dummy follows the main monster with a lag
+        if (hasDummy && dummyRef.current) {
+          const targetDummyPos = meshRef.current.position.clone().sub(dir.clone().multiplyScalar(3.5));
+          dummyRef.current.position.lerp(targetDummyPos, 0.05);
+          dummyRef.current.lookAt(meshRef.current.position);
+          
+          // Collision for dummy
+          if (dummyRef.current.position.distanceTo(playerPos) < 1.4) {
+            onCaught();
+          }
+        }
       }
 
       window.dispatchEvent(new CustomEvent('monster-pos', { detail: meshRef.current.position.clone() }));
@@ -98,6 +115,7 @@ const Monster3D = ({ onCaught, collected, stunnedUntil }: { onCaught: () => void
 
       if (dist > 40) {
         setActive(false);
+        setHasDummy(false);
         window.dispatchEvent(new CustomEvent('monster-pos', { detail: null }));
       }
     }
@@ -106,34 +124,55 @@ const Monster3D = ({ onCaught, collected, stunnedUntil }: { onCaught: () => void
   const isStunned = Date.now() < stunnedUntil;
 
   return (
-    <group ref={meshRef} position={pos} visible={active}>
-      <mesh>
-        <planeGeometry args={[2, 3]} />
-        <meshBasicMaterial color={isStunned ? "#003366" : "#000"} transparent opacity={0.8} />
-      </mesh>
-      <pointLight color={isStunned ? "#00ffff" : "#ff0000"} intensity={active ? 2 : 0} distance={10} />
-      {/* Eyes */}
-      <mesh position={[-0.3, 0.5, 0.1]}>
-        <sphereGeometry args={[0.05, 16, 16]} />
-        <meshBasicMaterial color={isStunned ? "#00ffff" : "#9d0000"} />
-      </mesh>
-      <mesh position={[0.3, 0.5, 0.1]}>
-        <sphereGeometry args={[0.05, 16, 16]} />
-        <meshBasicMaterial color={isStunned ? "#00ffff" : "#9d0000"} />
-      </mesh>
-      {isStunned && (
-        <group position={[0, 1.8, 0]}>
-          <Text
-            fontSize={0.3}
-            color="#00ffff"
-            anchorX="center"
-            anchorY="middle"
-          >
-            STUNNED
-          </Text>
+    <>
+      <group ref={meshRef} position={pos} visible={active}>
+        <mesh>
+          <planeGeometry args={[2, 3]} />
+          <meshBasicMaterial color={isStunned ? "#003366" : "#000"} transparent opacity={0.8} />
+        </mesh>
+        <pointLight color={isStunned ? "#00ffff" : "#ff0000"} intensity={active ? 2 : 0} distance={10} />
+        {/* Eyes */}
+        <mesh position={[-0.3, 0.5, 0.1]}>
+          <sphereGeometry args={[0.05, 16, 16]} />
+          <meshBasicMaterial color={isStunned ? "#00ffff" : "#9d0000"} />
+        </mesh>
+        <mesh position={[0.3, 0.5, 0.1]}>
+          <sphereGeometry args={[0.05, 16, 16]} />
+          <meshBasicMaterial color={isStunned ? "#00ffff" : "#9d0000"} />
+        </mesh>
+        {isStunned && (
+          <group position={[0, 1.8, 0]}>
+            <Text
+              fontSize={0.3}
+              color="#00ffff"
+              anchorX="center"
+              anchorY="middle"
+            >
+              STUNNED
+            </Text>
+          </group>
+        )}
+      </group>
+
+      {/* Trailing Dummy */}
+      {hasDummy && (
+        <group ref={dummyRef} position={dummyPos} visible={active}>
+          <mesh>
+            <planeGeometry args={[1.8, 2.7]} />
+            <meshBasicMaterial color="#111" transparent opacity={0.5} />
+          </mesh>
+          <pointLight color="#9d0000" intensity={active ? 0.8 : 0} distance={6} />
+          <mesh position={[-0.25, 0.4, 0.1]}>
+            <sphereGeometry args={[0.04, 16, 16]} />
+            <meshBasicMaterial color="#660000" />
+          </mesh>
+          <mesh position={[0.25, 0.4, 0.1]}>
+            <sphereGeometry args={[0.04, 16, 16]} />
+            <meshBasicMaterial color="#660000" />
+          </mesh>
         </group>
       )}
-    </group>
+    </>
   );
 };
 
