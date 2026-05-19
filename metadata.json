@@ -1,0 +1,6 @@
+{
+  "name": "呪いの森 (Cursed Forest)",
+  "description": "闇に包まれた森を探索し、忍び寄る恐怖から逃げ延びるサバイバルホラーゲーム。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
